@@ -118,3 +118,66 @@
 (define-read-only (get-performance-history (provider principal))
     (ok (map-get? performance-history provider))
 )
+
+(define-map provider-reputation
+    principal
+    {
+        reputation-score: uint,
+        total-profitable-trades: uint,
+        total-trades: uint,
+        last-updated: uint
+    }
+)
+
+(define-private (calculate-reputation-score (performance-list (list 20 { timestamp: uint, trade-result: int, verified: bool })))
+    (let (
+        (total-trades (len performance-list))
+        (profitable-trades (fold count-profitable-trades performance-list u0))
+    )
+        (if (> total-trades u0)
+            (/ (* profitable-trades u100) total-trades)
+            u0
+        )
+    )
+)
+
+(define-private (count-profitable-trades (trade { timestamp: uint, trade-result: int, verified: bool }) (acc uint))
+    (if (and (get verified trade) (> (get trade-result trade) 0))
+        (+ acc u1)
+        acc
+    )
+)
+
+(define-public (update-provider-reputation (provider-address principal))
+    (let (
+        (provider-data (unwrap! (map-get? providers provider-address) ERR-PROVIDER-NOT-FOUND))
+        (performance-data (default-to (list) (map-get? performance-history provider-address)))
+        (reputation-score (calculate-reputation-score performance-data))
+        (total-trades (len performance-data))
+        (profitable-trades (fold count-profitable-trades performance-data u0))
+    )
+        (map-set provider-reputation
+            provider-address
+            {
+                reputation-score: reputation-score,
+                total-profitable-trades: profitable-trades,
+                total-trades: total-trades,
+                last-updated: burn-block-height
+            }
+        )
+        (ok reputation-score)
+    )
+)
+
+(define-read-only (get-provider-reputation-score (provider-address principal))
+    (ok (map-get? provider-reputation provider-address))
+)
+
+(define-read-only (is-top-performer (provider-address principal) (min-score uint))
+    (let ((reputation-data (map-get? provider-reputation provider-address)))
+        (match reputation-data
+            data (ok (>= (get reputation-score data) min-score))
+            (ok false)
+        )
+    )
+)
