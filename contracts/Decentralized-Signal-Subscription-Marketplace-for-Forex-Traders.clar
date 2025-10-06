@@ -9,13 +9,14 @@
 (define-data-var min-stake-amount uint u1000)
 (define-data-var subscription-fee uint u100)
 
-(define-map providers 
-    principal 
+(define-map providers
+    principal
     {
         stake-amount: uint,
         total-subscribers: uint,
         performance-score: uint,
-        active: bool
+        active: bool,
+        subscription-fee: uint
     }
 )
 
@@ -36,22 +37,35 @@
     })
 )
 
-(define-public (register-provider (stake-amount uint))
+(define-public (register-provider (stake-amount uint) (custom-subscription-fee uint))
     (let ((provider tx-sender))
         (asserts! (>= stake-amount (var-get min-stake-amount)) ERR-INSUFFICIENT-STAKE)
         (asserts! (is-none (map-get? providers provider)) ERR-PROVIDER-EXISTS)
-        
+
         (try! (stx-transfer? stake-amount provider (as-contract tx-sender)))
-        
-        (ok (map-set providers 
+
+        (ok (map-set providers
             provider
             {
                 stake-amount: stake-amount,
                 total-subscribers: u0,
                 performance-score: u0,
-                active: true
+                active: true,
+                subscription-fee: custom-subscription-fee
             }
         ))
+    )
+)
+
+(define-public (update-subscription-fee (new-fee uint))
+    (let ((provider tx-sender))
+        (asserts! (is-some (map-get? providers provider)) ERR-PROVIDER-NOT-FOUND)
+        (let ((current-data (unwrap-panic (map-get? providers provider))))
+            (ok (map-set providers
+                provider
+                (merge current-data { subscription-fee: new-fee })
+            ))
+        )
     )
 )
 
@@ -76,12 +90,14 @@
     (let (
         (subscriber tx-sender)
         (subscription-key { subscriber: subscriber, provider: provider })
+        (provider-data (unwrap! (map-get? providers provider) ERR-PROVIDER-NOT-FOUND))
+        (fee (get subscription-fee provider-data))
     )
         (asserts! (is-some (map-get? providers provider)) ERR-PROVIDER-NOT-FOUND)
         (asserts! (is-none (map-get? subscriptions subscription-key)) ERR-SUBSCRIPTION-EXISTS)
-        
-        (try! (stx-transfer? (var-get subscription-fee) subscriber provider))
-        
+
+        (try! (stx-transfer? fee subscriber provider))
+
         (ok (map-set subscriptions
             subscription-key
             {
