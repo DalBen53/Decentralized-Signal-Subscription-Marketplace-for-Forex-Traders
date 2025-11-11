@@ -5,6 +5,8 @@
 (define-constant ERR-SUBSCRIPTION-EXISTS (err u104))
 (define-constant ERR-SUBSCRIPTION-NOT-FOUND (err u105))
 (define-constant ERR-INVALID-SUBSCRIPTION (err u106))
+(define-constant ERR-WITHDRAWAL-NOT-ALLOWED (err u107))
+(define-constant ERR-PERFORMANCE-LIST-FULL (err u108))
 
 (define-data-var min-stake-amount uint u1000)
 (define-data-var subscription-fee uint u100)
@@ -72,17 +74,21 @@
 (define-public (update-performance (trade-result int))
     (let ((provider tx-sender))
         (asserts! (is-some (map-get? providers provider)) ERR-PROVIDER-NOT-FOUND)
-        
-        (ok (map-set performance-history
-            provider
-            (unwrap-panic (as-max-len? 
-                (append (default-to (list) (map-get? performance-history provider))
-                {
-                    timestamp: burn-block-height,
-                    trade-result: trade-result,
-                    verified: true
-                })
-                u20))))
+        (let ((current-list (default-to (list) (map-get? performance-history provider))))
+            (if (< (len current-list) u20)
+                (ok (map-set performance-history
+                    provider
+                    (unwrap-panic (as-max-len?
+                        (append current-list
+                        {
+                            timestamp: burn-block-height,
+                            trade-result: trade-result,
+                            verified: true
+                        })
+                        u20))))
+                ERR-PERFORMANCE-LIST-FULL
+            )
+        )
     )
 )
 
@@ -98,12 +104,18 @@
 
         (try! (stx-transfer? fee subscriber provider))
 
-        (ok (map-set subscriptions
-            subscription-key
-            {
-                expires-at: (+ burn-block-height u1440),
-                active: true
-            }))
+        (ok (begin
+            (map-set subscriptions
+                subscription-key
+                {
+                    expires-at: (+ burn-block-height u1440),
+                    active: true
+                })
+            (map-set providers
+                provider
+                (merge provider-data { total-subscribers: (+ (get total-subscribers provider-data) u1) })
+            )
+        ))
     )
 )
 
@@ -113,13 +125,20 @@
         (subscription-key { subscriber: subscriber, provider: provider })
     )
         (asserts! (is-some (map-get? subscriptions subscription-key)) ERR-SUBSCRIPTION-NOT-FOUND)
-        
-        (ok (map-set subscriptions
-            subscription-key
-            {
-                expires-at: burn-block-height,
-                active: false
-            }))
+        (let ((provider-data (unwrap! (map-get? providers provider) ERR-PROVIDER-NOT-FOUND)))
+            (ok (begin
+                (map-set subscriptions
+                    subscription-key
+                    {
+                        expires-at: burn-block-height,
+                        active: false
+                    })
+                (map-set providers
+                    provider
+                    (merge provider-data { total-subscribers: (- (get total-subscribers provider-data) u1) })
+                )
+            ))
+        )
     )
 )
 
@@ -195,5 +214,24 @@
             data (ok (>= (get reputation-score data) min-score))
             (ok false)
         )
+    )
+)
+
+(define-public (withdraw-stake)
+    (let (
+        (provider tx-sender)
+        (provider-data (unwrap! (map-get? providers provider) ERR-PROVIDER-NOT-FOUND))
+        (stake-amount (get stake-amount provider-data))
+        (total-subscribers (get total-subscribers provider-data))
+        (reputation-data (unwrap! (map-get? provider-reputation provider) ERR-WITHDRAWAL-NOT-ALLOWED))
+        (reputation-score (get reputation-score reputation-data))
+    )
+        (asserts! (is-eq total-subscribers u0) ERR-WITHDRAWAL-NOT-ALLOWED)
+        (asserts! (>= reputation-score u80) ERR-WITHDRAWAL-NOT-ALLOWED)
+        (try! (stx-transfer? stake-amount (as-contract tx-sender) provider))
+        (ok (map-set providers
+            provider
+            (merge provider-data { stake-amount: u0, active: false })
+        ))
     )
 )
